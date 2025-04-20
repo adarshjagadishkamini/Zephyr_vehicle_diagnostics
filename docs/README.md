@@ -40,7 +40,7 @@ west flash -d build_gps gps_node
 ## System Architecture
 
 ### Node Communication
-![Node Communication](assets/node_communication.txt)
+![Node Communication](node_communication.txt)
 
 1. Sensor nodes collect data and transmit via CAN bus
 2. VCU processes CAN messages
