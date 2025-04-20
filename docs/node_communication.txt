@@ -1,8 +1,8 @@
 System Architecture - Node Communication Diagram
 ---------------------------------------------
 
-[External Systems]                 [Vehicle Control Unit (VCU)]          [Sensor Nodes]
-+----------------+                +------------------------+            +--------------+
+[External Systems]             [Vehicle Control Unit (VCU)]             [Sensor Nodes]
++----------------+              +------------------------+              +--------------+
 |   Cloud/MQTT   |<---(WiFi)---->|        VCU          |                | Temperature  |
 +----------------+               |                     |<---(CAN)------>|   Node       |
                                  |     Main Controller |                +--------------+
