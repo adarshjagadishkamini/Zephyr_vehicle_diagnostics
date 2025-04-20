@@ -36,8 +36,18 @@ static ssize_t wifi_ssid_write(struct bt_conn *conn,
                               const struct bt_gatt_attr *attr,
                               const void *buf, uint16_t len,
                               uint16_t offset, uint8_t flags) {
-    // Store SSID and trigger WiFi connection if both SSID and password are set
-    // Implementation here
+    static char ssid[MAX_SSID_LEN];
+    
+    if (offset + len > sizeof(ssid)) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+    }
+
+    memcpy(ssid + offset, buf, len);
+    
+    if (offset + len == strlen(ssid)) {
+        store_wifi_credentials(ssid, NULL);
+    }
+    
     return len;
 }
 
@@ -45,8 +55,19 @@ static ssize_t wifi_pass_write(struct bt_conn *conn,
                               const struct bt_gatt_attr *attr,
                               const void *buf, uint16_t len,
                               uint16_t offset, uint8_t flags) {
-    // Store password and trigger WiFi connection if both SSID and password are set
-    // Implementation here
+    static char password[MAX_PSK_LEN];
+    
+    if (offset + len > sizeof(password)) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+    }
+
+    memcpy(password + offset, buf, len);
+    
+    if (offset + len == strlen(password)) {
+        store_wifi_credentials(NULL, password);
+        wifi_connect(get_stored_ssid(), password);
+    }
+    
     return len;
 }
 

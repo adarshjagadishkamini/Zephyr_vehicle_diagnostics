@@ -58,6 +58,16 @@ static void handle_traffic_light_data(const struct json_obj_token *token) {
     }
 }
 
+static void calculate_stopping_distance(float distance) {
+    float current_speed = get_current_speed();
+    float brake_distance = (current_speed * current_speed) / (2 * BRAKE_DECELERATION);
+    
+    if (brake_distance > distance) {
+        trigger_brake_warning();
+        adjust_speed_for_traffic_light(distance);
+    }
+}
+
 static void handle_road_condition_data(const struct json_obj_token *token) {
     uint8_t condition;
     float friction;
@@ -81,6 +91,15 @@ static void handle_road_condition_data(const struct json_obj_token *token) {
     }
 }
 
+static void adjust_traction_control(float friction) {
+    struct traction_params params = {
+        .friction_coefficient = friction,
+        .stability_threshold = calculate_stability_threshold(friction)
+    };
+    
+    apply_traction_control(&params);
+}
+
 static void handle_traffic_flow_data(const struct json_obj_token *token) {
     uint16_t density;
     float avg_speed;
@@ -96,6 +115,23 @@ static void handle_traffic_flow_data(const struct json_obj_token *token) {
         suggest_alternate_route();
         notify_traffic_congestion();
     }
+}
+
+static void notify_traffic_congestion(void) {
+    struct v2x_message msg = {
+        .msg_type = V2X_MSG_TRAFFIC,
+        .priority = 1,
+        .data_len = sizeof(struct traffic_info)
+    };
+    
+    struct traffic_info info = {
+        .location = get_current_location(),
+        .speed = get_current_speed(),
+        .density = calculate_traffic_density()
+    };
+    
+    memcpy(msg.data, &info, sizeof(info));
+    v2x_route_message(&msg);
 }
 
 void process_v2i_message(const uint8_t *data, uint16_t len) {

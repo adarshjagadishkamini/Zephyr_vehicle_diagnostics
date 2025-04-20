@@ -35,6 +35,45 @@ void mqtt_client_init(struct mqtt_client *client) {
     client->tx_buf_size = sizeof(tx_buffer);
 }
 
+void mqtt_evt_handler(struct mqtt_client *client, struct mqtt_evt *evt) {
+    switch (evt->type) {
+        case MQTT_EVT_CONNACK:
+            if (evt->result == 0) {
+                subscribe_to_topics();
+            }
+            break;
+            
+        case MQTT_EVT_DISCONNECT:
+            handle_error(ERROR_MQTT_DISCONNECT);
+            k_work_schedule(&mqtt_work, K_SECONDS(5));
+            break;
+            
+        case MQTT_EVT_PUBACK:
+            if (evt->result != 0) {
+                handle_error(ERROR_MQTT_PUBLISH);
+            }
+            break;
+            
+        case MQTT_EVT_SUBACK:
+            if (evt->result != 0) {
+                handle_error(ERROR_MQTT_SUBSCRIBE);
+            }
+            break;
+            
+        case MQTT_EVT_PUBLISH:
+            handle_incoming_mqtt_message(evt);
+            break;
+    }
+}
+
+void mqtt_connect_work_handler(struct k_work *work) {
+    int ret = mqtt_connect(&mqtt_client);
+    if (ret < 0) {
+        handle_error(ERROR_MQTT_CONNECT);
+        k_work_schedule(&mqtt_work, K_SECONDS(5));
+    }
+}
+
 void publish_sensor_data(const char *topic, float value) {
     char payload[32];
     struct mqtt_publish_param param;
