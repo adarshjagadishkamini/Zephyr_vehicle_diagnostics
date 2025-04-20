@@ -70,6 +70,24 @@ static void handle_bus_off_recovery(void) {
     reset_can_statistics();
 }
 
+static void handle_memory_violation(void) {
+    LOG_ERR("Memory protection violation detected");
+    log_safety_event("Memory violation", k_uptime_get_32());
+    enter_safe_state();
+}
+
+static void handle_task_deadline_miss(void) {
+    LOG_ERR("Task deadline violation detected");
+    log_safety_event("Deadline miss", k_uptime_get_32());
+    reset_violated_task();
+}
+
+static void handle_stack_overflow(void) {
+    LOG_ERR("Stack overflow detected");
+    log_safety_event("Stack overflow", k_uptime_get_32());
+    enter_safe_state();
+}
+
 void watchdog_feed(void) {
     wdt_feed(wdt_dev, 0);
 }

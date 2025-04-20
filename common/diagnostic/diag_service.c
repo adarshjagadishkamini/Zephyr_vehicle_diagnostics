@@ -17,6 +17,51 @@ void diagnostic_service_init(void) {
     init_error_memory();
 }
 
+static int pack_vehicle_info(uint8_t *response) {
+    struct vehicle_info {
+        char vin[17];
+        uint16_t model_year;
+        uint32_t sw_version;
+    } info = {
+        .vin = "VIN1234567890ABCD",
+        .model_year = 2024,
+        .sw_version = VERSION_MAJOR << 16 | VERSION_MINOR << 8 | VERSION_PATCH
+    };
+    
+    memcpy(response, &info, sizeof(info));
+    return sizeof(info);
+}
+
+static int pack_software_version(uint8_t *response) {
+    struct sw_versions {
+        uint32_t bootloader;
+        uint32_t application;
+        uint32_t protocol_stack;
+    } versions = {
+        .bootloader = BOOTLOADER_VERSION,
+        .application = APP_VERSION,
+        .protocol_stack = PROTO_VERSION
+    };
+    
+    memcpy(response, &versions, sizeof(versions));
+    return sizeof(versions);
+}
+
+static int pack_sensor_status(uint8_t *response) {
+    uint8_t len = 0;
+    for (int i = 0; i < num_sensors; i++) {
+        struct sensor_status status;
+        get_sensor_status(i, &status);
+        memcpy(response + len, &status, sizeof(status));
+        len += sizeof(status);
+    }
+    return len;
+}
+
+static int pack_error_memory(uint8_t *response) {
+    return get_stored_dtcs(response);
+}
+
 static int handle_read_data_by_id(const uint8_t *data, uint16_t len) {
     uint16_t did = (data[0] << 8) | data[1];
     uint8_t response[256];
@@ -73,6 +118,42 @@ static int handle_security_access(const uint8_t *data, uint16_t len) {
     }
     
     return -EACCES;
+}
+
+static int execute_self_test(uint8_t control_type) {
+    switch (control_type) {
+        case ROUTINE_START:
+            return start_self_test();
+        case ROUTINE_STOP:
+            return stop_self_test();
+        case ROUTINE_RESULT:
+            return get_self_test_result();
+    }
+    return -EINVAL;
+}
+
+static int perform_sensor_calibration(uint8_t control_type) {
+    switch (control_type) {
+        case ROUTINE_START:
+            return start_sensor_calibration();
+        case ROUTINE_STOP:
+            return stop_sensor_calibration();
+        case ROUTINE_RESULT:
+            return get_calibration_result();
+    }
+    return -EINVAL;
+}
+
+static int perform_memory_check(uint8_t control_type) {
+    switch (control_type) {
+        case ROUTINE_START:
+            return start_memory_check();
+        case ROUTINE_STOP:
+            return stop_memory_check();
+        case ROUTINE_RESULT:
+            return get_memory_check_result();
+    }
+    return -EINVAL;
 }
 
 static int handle_routine_control(const uint8_t *data, uint16_t len) {

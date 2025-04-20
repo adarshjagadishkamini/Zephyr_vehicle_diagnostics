@@ -35,3 +35,33 @@ void process_traffic_signal(uint8_t signal_id, uint8_t state) {
              signal_id, state);
     publish_to_topic(TOPIC_V2I, json);
 }
+
+void process_road_condition(uint8_t segment_id, uint8_t condition) {
+    for (int i = 0; i < MAX_INFRASTRUCTURE_NODES; i++) {
+        if (nodes[i].id == segment_id) {
+            nodes[i].data.road.condition = condition;
+            nodes[i].last_update = k_uptime_get();
+            
+            // Update V2X system
+            char json[128];
+            snprintf(json, sizeof(json),
+                    "{\"type\":\"road\",\"id\":%d,\"condition\":%d}",
+                    segment_id, condition);
+            publish_to_topic(TOPIC_V2I, json);
+            break;
+        }
+    }
+}
+
+void notify_infrastructure_event(uint8_t event_type, const void *data) {
+    struct v2x_message msg = {
+        .msg_type = V2X_MSG_TRAFFIC,
+        .priority = 2,
+        .timestamp = k_uptime_get()
+    };
+    
+    msg.data_len = sizeof(struct infrastructure_event);
+    memcpy(msg.data, data, msg.data_len);
+    
+    v2x_route_message(&msg);
+}
