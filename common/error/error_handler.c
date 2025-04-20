@@ -49,6 +49,27 @@ void handle_error(system_error_t error) {
     }
 }
 
+static void handle_timing_violation(void) {
+    log_safety_event("Task timing violation", k_uptime_get_32());
+    
+    if (++timing_violations > MAX_TIMING_VIOLATIONS) {
+        enter_safe_state();
+    } else {
+        // Try recovery by resetting task
+        reset_violated_task();
+    }
+}
+
+static void handle_bus_off_recovery(void) {
+    // Attempt CAN bus recovery
+    if (can_recover_from_bus_off(can_dev) != 0) {
+        enter_safe_state();
+    }
+    
+    // Reset CAN message counters
+    reset_can_statistics();
+}
+
 void watchdog_feed(void) {
     wdt_feed(wdt_dev, 0);
 }
