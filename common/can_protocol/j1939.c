@@ -33,3 +33,43 @@ int j1939_send_pgn(struct j1939_ctx *ctx, uint32_t pgn, const uint8_t *data, uin
     memcpy(frame.data, data, len);
     return can_send(ctx->can_dev, &frame, K_MSEC(100), NULL, NULL);
 }
+
+// Transport Protocol (TP) support
+static void handle_tp_cm(struct j1939_ctx *ctx, const struct can_frame *frame) {
+    uint8_t tp_cmd = frame->data[0];
+    
+    switch (tp_cmd) {
+        case TP_CM_RTS:
+            handle_tp_rts(ctx, frame);
+            break;
+        case TP_CM_CTS:
+            handle_tp_cts(ctx, frame);
+            break;
+        case TP_CM_EndOfMsgAck:
+            handle_tp_eom_ack(ctx, frame);
+            break;
+        case TP_CM_BAM:
+            handle_tp_bam(ctx, frame);
+            break;
+    }
+}
+
+void j1939_process_message(struct j1939_ctx *ctx, struct can_frame *frame) {
+    uint32_t pgn = (frame->id >> 8) & 0x1FFFF;
+    
+    if (pgn == PGN_TP_CM) {
+        handle_tp_cm(ctx, frame);
+        return;
+    }
+    
+    // Handle standard PGNs
+    switch (pgn) {
+        case J1939_PGN_ENGINE_TEMP:
+            process_engine_temp(ctx, frame);
+            break;
+        case J1939_PGN_VEHICLE_SPEED:
+            process_vehicle_speed(ctx, frame);
+            break;
+        // Add more PGN handlers
+    }
+}

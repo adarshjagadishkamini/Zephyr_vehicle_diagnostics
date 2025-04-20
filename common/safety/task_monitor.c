@@ -7,6 +7,9 @@ struct monitored_task {
     uint64_t execution_start;
     uint32_t missed_deadlines;
     bool is_active;
+    int execution_result1;
+    int execution_result2;
+    int execution_result3;
 };
 
 static struct monitored_task tasks[MAX_MONITORED_TASKS];
@@ -47,6 +50,36 @@ static void monitor_thread(void *p1, void *p2, void *p3) {
     }
 }
 
+void task_monitor_checkpoint(const char *task_name) {
+    for (int i = 0; i < num_tasks; i++) {
+        if (strcmp(tasks[i].config.name, task_name) == 0) {
+            // Update checkpoint time
+            tasks[i].last_checkpoint = k_uptime_get();
+            
+            // Verify control flow sequence
+            if (!verify_control_flow_sequence()) {
+                handle_error(ERROR_CONTROL_FLOW_VIOLATION);
+                enter_safe_state();
+            }
+            
+            // Monitor stack usage
+            k_thread_runtime_stats_t stats;
+            k_thread_runtime_stats_get(k_current_get(), &stats);
+            if (stats.stack_size_free < STACK_WARNING_THRESHOLD) {
+                handle_error(ERROR_STACK_OVERFLOW_WARNING);
+            }
+            
+            break;
+        }
+    }
+}
+
+// Add redundancy check for critical tasks
+static bool verify_redundant_execution(struct monitored_task *task) {
+    return (task->execution_result1 == task->execution_result2) &&
+           (task->execution_result2 == task->execution_result3);
+}
+
 int task_monitor_init(void) {
     // Create monitor thread
     k_thread_create(&monitor_thread_data, monitor_stack,
@@ -67,6 +100,9 @@ int register_monitored_task(const struct task_config *config) {
     tasks[num_tasks].execution_start = 0;
     tasks[num_tasks].missed_deadlines = 0;
     tasks[num_tasks].is_active = true;
+    tasks[num_tasks].execution_result1 = 0;
+    tasks[num_tasks].execution_result2 = 0;
+    tasks[num_tasks].execution_result3 = 0;
     
     num_tasks++;
     return 0;

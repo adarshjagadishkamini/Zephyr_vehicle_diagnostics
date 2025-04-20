@@ -1,0 +1,26 @@
+/ {
+    aliases {
+        gps-uart = &uart1;
+    };
+};
+
+&uart1 {
+    status = "okay";
+    current-speed = <9600>;
+    pinctrl-0 = <&uart1_default>;
+    pinctrl-names = "default";
+    
+    neo6m: neo6m {
+        compatible = "u-blox,neo6m";
+        status = "okay";
+    };
+};
+
+&pinctrl {
+    uart1_default: uart1_default {
+        group1 {
+            pinmux = <UART1_TX_GPIO17>,
+                     <UART1_RX_GPIO16>;
+        };
+    };
+};
