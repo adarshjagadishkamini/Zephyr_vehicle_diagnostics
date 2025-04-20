@@ -1,0 +1,20 @@
+name: Static Analysis
+
+on: [push, pull_request]
+
+jobs:
+  coverity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Run Coverity
+        run: |
+          ./coverity.sh
+
+  misra:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: MISRA C Check
+        run: |
+          ./check_misra.sh
