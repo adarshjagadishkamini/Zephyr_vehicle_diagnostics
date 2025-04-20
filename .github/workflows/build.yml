@@ -1,0 +1,36 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake ninja-build gperf ccache dfu-util device-tree-compiler
+        pip3 install west
+
+    - name: Initialize West
+      run: |
+        west init -l .
+        west update
+        west zephyr-export
+
+    - name: Build All Nodes
+      run: |
+        chmod +x build.sh
+        ./build.sh
+
+    - name: Run Tests
+      run: |
+        cd tests
+        west build -b native_posix
+        west build -t run

@@ -1,0 +1,31 @@
+/ {
+    chosen {
+        zephyr,canbus = &twai;
+    };
+
+    aliases {
+        uart-gps = &uart1;
+        i2c-sens = &i2c0;
+    };
+};
+
+&twai {
+    status = "okay";
+    bus-speed = <500000>;
+    pinctrl-0 = <&twai_default>;
+    pinctrl-names = "default";
+};
+
+&i2c0 {
+    status = "okay";
+    clock-frequency = <I2C_BITRATE_STANDARD>;
+    pinctrl-0 = <&i2c0_default>;
+    pinctrl-names = "default";
+};
+
+&uart1 {
+    status = "okay";
+    current-speed = <9600>;
+    pinctrl-0 = <&uart1_default>;
+    pinctrl-names = "default";
+};

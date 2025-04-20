@@ -1,0 +1,11 @@
+menu "Temperature Node Configuration"
+
+config TEMP_SENSOR_INTERVAL
+    int "Temperature reading interval in milliseconds"
+    default 1000
+    help
+        How often to read temperature values
+
+endmenu
+
+source "Kconfig.zephyr"

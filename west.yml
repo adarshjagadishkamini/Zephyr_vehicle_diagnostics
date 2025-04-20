@@ -1,0 +1,11 @@
+manifest:
+  version: 0.7
+  projects:
+    - name: zephyr
+      url: https://github.com/zephyrproject-rtos/zephyr
+      revision: v3.5.0
+      import: true
+    - name: esp32_modules
+      url: https://github.com/espressif/esp-idf
+      revision: v4.4.5
+      path: modules/esp32

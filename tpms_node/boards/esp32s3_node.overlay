@@ -1,0 +1,17 @@
+/ {
+    aliases {
+        spi-tpms = &spi0;
+    };
+};
+
+&spi0 {
+    status = "okay";
+    cs-gpios = <&gpio0 2 GPIO_ACTIVE_LOW>;
+    
+    sp370: sp370@0 {
+        compatible = "sp370";
+        reg = <0>;
+        spi-max-frequency = <1000000>;
+        status = "okay";
+    };
+};
