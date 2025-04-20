@@ -27,3 +27,34 @@ void set_power_state(power_state_t state) {
     }
     current_state = state;
 }
+
+void handle_wake_event(uint32_t event) {
+    switch (event) {
+        case WAKE_CAN_MSG:
+            if (current_state != POWER_STATE_ACTIVE) {
+                set_power_state(POWER_STATE_ACTIVE);
+                resume_can_operations();
+            }
+            break;
+        case WAKE_TIMER:
+            handle_timer_wakeup();
+            break;
+        case WAKE_EXTERNAL:
+            handle_external_wakeup();
+            break;
+    }
+}
+
+void configure_wake_sources(uint32_t sources) {
+    enabled_wake_sources = sources;
+    
+    // Configure CAN wake-up
+    if (sources & WAKE_CAN_MSG) {
+        pm_device_wakeup_enable(can_dev, true);
+    }
+    
+    // Configure GPIO wake-up
+    if (sources & WAKE_EXTERNAL) {
+        configure_gpio_wakeup();
+    }
+}
