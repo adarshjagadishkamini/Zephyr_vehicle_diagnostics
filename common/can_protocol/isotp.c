@@ -72,3 +72,62 @@ int isotp_send(struct isotp_ctx *ctx, const uint8_t *data, size_t len) {
         return 0;
     }
 }
+
+int isotp_receive(struct isotp_ctx *ctx, uint8_t *data, size_t len) {
+    struct can_frame frame;
+    uint8_t *dest = data;
+    size_t remaining = len;
+    
+    // Receive first frame
+    if (can_receive(ctx->can_dev, &frame, K_MSEC(ISO_TP_TIMEOUT_MS)) != 0) {
+        return -ETIMEDOUT;
+    }
+    
+    uint8_t frame_type = frame.data[0] & 0xF0;
+    if (frame_type == ISOTP_SINGLE_FRAME) {
+        size_t recv_len = frame.data[0] & 0x0F;
+        memcpy(dest, &frame.data[1], recv_len);
+        return recv_len;
+    } else if (frame_type == ISOTP_FIRST_FRAME) {
+        size_t total_len = ((frame.data[0] & 0x0F) << 8) | frame.data[1];
+        if (total_len > len) return -ENOSPC;
+        
+        memcpy(dest, &frame.data[2], 6);
+        dest += 6;
+        remaining -= 6;
+        
+        // Send flow control
+        struct can_frame fc = {
+            .id = ctx->tx_id,
+            .dlc = 3,
+            .data = {ISOTP_FLOW_CONTROL, ISO_TP_BLOCK_SIZE, ISO_TP_STM}
+        };
+        can_send(ctx->can_dev, &fc, K_MSEC(100), NULL, NULL);
+        
+        // Receive consecutive frames
+        uint8_t expected_seq = 1;
+        while (remaining > 0) {
+            if (can_receive(ctx->can_dev, &frame, K_MSEC(ISO_TP_TIMEOUT_MS)) != 0) {
+                return -ETIMEDOUT;
+            }
+            
+            if ((frame.data[0] & 0xF0) != ISOTP_CONSECUTIVE) {
+                return -EINVAL;
+            }
+            
+            if ((frame.data[0] & 0x0F) != expected_seq) {
+                return -EINVAL;
+            }
+            
+            size_t copy_len = MIN(7, remaining);
+            memcpy(dest, &frame.data[1], copy_len);
+            dest += copy_len;
+            remaining -= copy_len;
+            expected_seq = (expected_seq + 1) & 0x0F;
+        }
+        
+        return total_len;
+    }
+    
+    return -EINVAL;
+}

@@ -10,6 +10,9 @@ struct monitored_task {
     int execution_result1;
     int execution_result2;
     int execution_result3;
+    task_state_t current_state;
+    task_state_t last_state;
+    struct task_statistics stats;
 };
 
 static struct monitored_task tasks[MAX_MONITORED_TASKS];
@@ -80,6 +83,43 @@ static bool verify_redundant_execution(struct monitored_task *task) {
            (task->execution_result2 == task->execution_result3);
 }
 
+void update_task_state(const char *task_name, task_state_t new_state) {
+    struct k_thread *thread;
+    k_tid_t curr_tid = k_current_get();
+    
+    for (int i = 0; i < num_tasks; i++) {
+        if (strcmp(tasks[i].config.name, task_name) == 0) {
+            // Update state
+            tasks[i].current_state = new_state;
+            
+            // Log state transition
+            LOG_DBG("Task %s state change: %d", task_name, new_state);
+            
+            // Check for invalid transitions
+            if (is_invalid_transition(tasks[i].last_state, new_state)) {
+                handle_error(ERROR_INVALID_TASK_STATE);
+            }
+            
+            // Update statistics
+            if (new_state == TASK_STATE_RUNNING) {
+                tasks[i].stats.context_switches++;
+            }
+            
+            tasks[i].last_state = new_state;
+            break;
+        }
+    }
+}
+
+void get_task_statistics(const char *task_name, struct task_statistics *stats) {
+    for (int i = 0; i < num_tasks; i++) {
+        if (strcmp(tasks[i].config.name, task_name) == 0) {
+            memcpy(stats, &tasks[i].stats, sizeof(struct task_statistics));
+            break;
+        }
+    }
+}
+
 int task_monitor_init(void) {
     // Create monitor thread
     k_thread_create(&monitor_thread_data, monitor_stack,
@@ -103,6 +143,9 @@ int register_monitored_task(const struct task_config *config) {
     tasks[num_tasks].execution_result1 = 0;
     tasks[num_tasks].execution_result2 = 0;
     tasks[num_tasks].execution_result3 = 0;
+    tasks[num_tasks].current_state = TASK_STATE_INIT;
+    tasks[num_tasks].last_state = TASK_STATE_INIT;
+    memset(&tasks[num_tasks].stats, 0, sizeof(struct task_statistics));
     
     num_tasks++;
     return 0;

@@ -96,3 +96,38 @@ void handle_memory_violation(void *addr)
         trigger_system_reset();
     }
 }
+
+void memory_violation_handler(void) {
+    void *fault_address = (void *)SCB->MMFAR;
+    
+    // Log violation details
+    LOG_ERR("Memory Protection Fault at address: %p", fault_address);
+    
+    // Check if address is in any protected region
+    for (int i = 0; i < num_regions; i++) {
+        if (fault_address >= regions[i].start_addr && 
+            fault_address < (regions[i].start_addr + regions[i].size)) {
+            LOG_ERR("Violation in protected region %d", i);
+            break;
+        }
+    }
+    
+    // Handle violation
+    handle_memory_violation(fault_address);
+    
+    // Reset if unrecoverable
+    if (is_critical_memory_region(fault_address)) {
+        sys_reboot(SYS_REBOOT_COLD);
+    }
+}
+
+bool verify_memory_integrity(void) {
+    for (int i = 0; i < num_regions; i++) {
+        if (!verify_memory_region(regions[i].start_addr, 
+                                regions[i].size,
+                                regions[i].crc)) {
+            return false;
+        }
+    }
+    return true;
+}
