@@ -11,9 +11,15 @@
 
 &twai {
     status = "okay";
-    bus-speed = <500000>;
     pinctrl-0 = <&twai_default>;
     pinctrl-names = "default";
+    bus-speed = <500000>;
+    bus-speed-data = <2000000>;
+    sjw = <1>;
+    sjw-data = <1>;
+    prop-seg = <0>;
+    phase-seg1 = <15>;
+    phase-seg2 = <4>;
 };
 
 &i2c0 {
