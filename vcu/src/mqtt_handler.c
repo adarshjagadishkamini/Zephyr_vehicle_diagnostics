@@ -52,3 +52,33 @@ void publish_sensor_data(const char *topic, float value) {
 
     mqtt_publish(&client, &param);
 }
+
+void publish_to_topic(const char *topic, const char *payload)
+{
+    struct mqtt_publish_param param = {
+        .message.topic.qos = 1,
+        .message.topic.topic.utf8 = topic,
+        .message.topic.topic.size = strlen(topic),
+        .message.payload.data = payload,
+        .message.payload.len = strlen(payload),
+        .message_id = sys_rand32_get(),
+        .dup_flag = 0,
+        .retain_flag = 0
+    };
+
+    mqtt_publish(mqtt_client, &param);
+}
+
+void subscribe_to_topics(void)
+{
+    static struct mqtt_topic_list topics = {
+        .list = {
+            { .topic = { .utf8 = TOPIC_V2I } },
+            { .topic = { .utf8 = TOPIC_TRAFFIC_UPDATE } },
+            { .topic = { .utf8 = TOPIC_HAZARD_NOTIFICATION } }
+        },
+        .count = 3
+    };
+    
+    mqtt_subscribe(mqtt_client, &topics);
+}

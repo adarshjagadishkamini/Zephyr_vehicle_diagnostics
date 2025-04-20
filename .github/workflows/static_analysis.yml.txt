@@ -3,18 +3,21 @@ name: Static Analysis
 on: [push, pull_request]
 
 jobs:
-  coverity:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - name: Run Coverity
-        run: |
-          ./coverity.sh
-
   misra:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
-      - name: MISRA C Check
+      - name: Install cppcheck
+        run: sudo apt-get install -y cppcheck
+      - name: Run MISRA check
         run: |
-          ./check_misra.sh
+          cppcheck --enable=all --addon=misra.json .
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Build with coverage
+        run: |
+          west build -b native_posix -- -DCONFIG_COVERAGE=y
+          west build -t coverage

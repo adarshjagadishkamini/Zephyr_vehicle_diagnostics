@@ -74,3 +74,25 @@ void monitor_memory_access(void *addr, size_t size, uint32_t access_type) {
 
     log_memory_access(&record);
 }
+
+bool verify_memory_region(void *addr, size_t size, uint32_t expected_crc)
+{
+    uint32_t current_crc = crc32_ieee(addr, size);
+    return current_crc == expected_crc;
+}
+
+void handle_memory_violation(void *addr)
+{
+    // Log violation
+    log_safety_event("Memory violation", (uint32_t)addr);
+    
+    // Enter safe state
+    enter_safe_state();
+    
+    // Attempt recovery
+    if (verify_memory_integrity()) {
+        restore_safe_configuration();
+    } else {
+        trigger_system_reset();
+    }
+}

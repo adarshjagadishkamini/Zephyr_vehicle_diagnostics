@@ -1,0 +1,27 @@
+menu "Safety Features"
+
+config ASIL_MONITOR
+    bool "Enable ASIL-B Safety Monitor"
+    default y
+    help
+        Enable ASIL-B compliance monitoring features
+
+config TASK_MONITOR
+    bool "Enable Task Monitoring"
+    default y
+    help
+        Enable task deadline and runtime monitoring
+
+config MEMORY_PROTECTION
+    bool "Enable Memory Protection"
+    default y
+    help
+        Enable MPU-based memory protection features
+
+config RUNTIME_STATS
+    bool "Enable Runtime Statistics"
+    default y
+    help
+        Enable collection of runtime statistics
+
+endmenu
