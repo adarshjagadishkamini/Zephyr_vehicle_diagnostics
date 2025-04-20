@@ -1,0 +1,48 @@
+System Architecture - Node Communication Diagram
+---------------------------------------------
+
+[External Systems]                 [Vehicle Control Unit (VCU)]          [Sensor Nodes]
++----------------+                +------------------------+            +--------------+
+|   Cloud/MQTT   |<---(WiFi)---->|        VCU          |                | Temperature  |
++----------------+               |                     |<---(CAN)------>|   Node       |
+                                 |     Main Controller |                +--------------+
++----------------+               |     - MQTT Handler  |                
+| Other Vehicles |<---(BLE)----->|     - V2V Handler   |                +--------------+
++----------------+               |     - V2I Handler   |<---(CAN)------->|    GPS      |
+                                 |     - CAN Router    |                 |   Node      |
++----------------+               |                     |                 +-------------+
+| Infrastructure |<---(MQTT)---->|     Security:       |
+|  (Traffic/     |               |     - Secure Boot   |                 +--------------+
+|   Weather)     |               |     - Message Auth  |<---(CAN)------> | Collision    |
++----------------+               |     - Encryption    |                 |   Node       |
+                                 |                     |                 +--------------+
++----------------+               |     Safety:         |
+| Mobile App     |<---(BLE)----->|     - ASIL-B        |                 +-------------+
+| (Configuration)|               |     - Monitoring    |<---(CAN)------> |  Battery    |
++----------------+               |     - Diagnostics   |                 |   Node      |
+                                 |                     |                 +-------------+
+                                 |                     |
+                                 |                     |                 +--------------+
+                                 |                     |<---(CAN)------> |   Brake      |
+                                 |                     |                 |   Node       |
+                                 |                     |                 +--------------+
+                                 |                     |
+                                 |                     |                 +--------------+
+                                 |                     |<---(CAN)------> |   TPMS       |
+                                 |                     |                 |   Node       |
+                                 +----------------------+                +--------------+
+
+Communication Protocols:
+----------------------
+CAN  : Internal vehicle communication (500kbps)
+BLE  : V2V communication and initial WiFi configuration
+MQTT : Cloud connectivity and V2I communication
+WiFi : Internet connectivity for MQTT
+
+Security Layers:
+--------------
+1. CAN Messages: Authenticated using CMAC
+2. MQTT: TLS encryption
+3. BLE: Security Level 2
+4. Storage: AES-256 encryption
+
