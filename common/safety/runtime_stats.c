@@ -55,5 +55,13 @@ void runtime_stats_end_task(const char *task_name) {
 }
 
 void runtime_stats_report(void) {
-    // Implementation needed for statistics reporting
+    for (int i = 0; i < num_tasks; i++) {
+        printk("Task: %s\n", task_names[i]);
+        printk("  Total Runtime: %lld ms\n", task_stats[i].total_runtime);
+        printk("  Executions: %d\n", task_stats[i].execution_count);
+        printk("  Max Time: %d ms\n", task_stats[i].max_execution_time);
+        printk("  Min Time: %d ms\n", task_stats[i].min_execution_time);
+        printk("  Avg Time: %d ms\n", task_stats[i].avg_execution_time);
+        printk("  Deadline Misses: %d\n", task_stats[i].deadline_misses);
+    }
 }
