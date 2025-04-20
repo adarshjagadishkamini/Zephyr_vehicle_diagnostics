@@ -1,0 +1,20 @@
+/ {
+    aliases {
+        trig-gpio = &gpio0;
+        echo-gpio = &gpio0;
+    };
+};
+
+&gpio0 {
+    status = "okay";
+};
+
+&pinctrl {
+    hcsr04_default: hcsr04_default {
+        group1 {
+            pinmux = <13>, /* TRIG */
+                     <14>; /* ECHO */
+            output-enable;
+        };
+    };
+};
