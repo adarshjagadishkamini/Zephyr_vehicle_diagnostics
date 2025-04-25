@@ -14,79 +14,32 @@
 ## System Architecture
 ### Node Distribution
 1. **Vehicle Control Unit (VCU)**
-   - Main controller handling V2X communication
-   - WiFi/BLE configuration
-   - MQTT broker communication
-   - CAN message routing
+   - Primary: CAN message routing, diagnostics
+   - Secondary: BLE configuration, MQTT communication
+   - Optional: V2X features (experimental)
 
-2. **Sensor Nodes (Individual ECUs)**
+2. **Essential Sensor Nodes**
    - Temperature Monitoring ECU
-   - Location & Speed ECU
-   - Collision Detection ECU
-   - Battery Management ECU
+   - Battery Management ECU 
    - Brake System ECU
    - TPMS ECU
 
 ### Communication Architecture
-- **Internal**: CAN bus (500kbps)
+- **Internal**: CAN bus with ISO-TP (primary)
 - **External**: 
-  - MQTT for cloud communication
-  - BLE for initial configuration
-  - BLE for V2V communication
+  - MQTT for basic telemetry
+  - BLE for configuration
+  - V2X features marked as experimental/future
 
-### 1. Hardware Abstraction Layer (HAL)
-- Zephyr device drivers
-  - CAN: TWAI driver (ESP32's native CAN)
-  - I2C: Replace with Zephyr's I2C API
-  - GPIO: Zephyr GPIO subsystem
-  - ADC: Zephyr ADC API for analog sensors
-
-### 2. Basic Software Layer
-#### Communication Stack
-- CAN Stack
-  - ISO-TP protocol support
-  - J1939 protocol implementation
-  - CAN FD support
-- Network Stack
-  - Zephyr's native network stack
-  - MQTT over TLS
-  - DNS support
-
-#### System Services
-- Diagnostic Manager
-  - Sensor validation
-  - CAN bus monitoring
-  - Error logging
-- Security Manager
-  - CAN intrusion detection
-  - Secure boot
-  - Message authentication
-- State Manager
-  - Vehicle state monitoring
-  - Power mode management
-
-### 3. Runtime Environment
-- Signal-based communication (AUTOSAR-inspired)
-- Event handling
-- Task scheduling
-- Inter-process communication
-
-### 4. Application Layer
-- Sensor Management
-- Vehicle Tracking
-- Cloud Communication
-- Diagnostic Services
-
-## Safety & Security Features
-- ASIL B compliance (chosen based on:
-  - Medium severity of failure
-  - Moderate exposure
-  - Partial controllability)
-- Secure Boot
-- Encrypted storage
-- CAN message authentication
-- Watchdog implementation
-- Sensor plausibility checks
+### Safety Features (ASIL-B)
+- Core Features:
+  - Task monitoring & deadlines
+  - Memory protection
+  - Error recovery mechanisms
+  - Runtime statistics
+- Optional Features:
+  - Advanced redundancy (future)
+  - Full V2X safety features (future)
 
 ## Development Tools & Standards
 - Zephyr RTOS v3.5
@@ -126,13 +79,12 @@ Zephyr_vehicletracking/
 4. [Open-Vehicle-Monitoring-System-3](https://github.com/openvehicles/Open-Vehicle-Monitoring-System-3)
 
 ## Next Steps
-1. Setup Zephyr development environment
-2. Create project structure
-3. Implement HAL layer
-4. Develop basic software services
-5. Migrate application logic
-6. Implement security features
-7. Testing and validation
+1. Complete core sensor node implementations
+2. Stabilize CAN communication
+3. Implement basic diagnostic features
+4. Validate ASIL-B core requirements
+5. Document achieved safety goals
+6. Optional: Begin V2X feature testing
 
 ## Implementation Status
 
