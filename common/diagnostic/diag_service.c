@@ -1,203 +1,303 @@
+#include <zephyr/kernel.h>
+#include <zephyr/crypto/crypto.h>
+#include <string.h>
 #include "diag_service.h"
 #include "secure_storage.h"
+#include "error_handler.h"
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(diag_service, CONFIG_DIAGNOSTIC_LOG_LEVEL);
 
-static struct {
-    uint32_t error_count;
-    uint32_t last_error_time;
-    uint16_t vehicle_status;
+#define MAX_SECURITY_ATTEMPTS 3
+#define SECURITY_LOCKOUT_TIME_MS 10000
+#define MAX_TRANSFER_SIZE 4096
+#define MAX_PERIODIC_DIDS 16
+
+struct diag_context {
+    uint8_t current_session;
     uint8_t security_level;
-} diag_ctx;
+    uint8_t security_attempts;
+    uint32_t last_security_attempt;
+    bool dtc_settings_enabled;
+    struct routine_status active_routine;
+    struct {
+        uint16_t did;
+        uint16_t rate_ms;
+    } periodic_dids[MAX_PERIODIC_DIDS];
+    uint8_t num_periodic_dids;
+    K_MUTEX_DEFINE(context_lock);
+};
+
+static struct diag_context diag_ctx;
+static uint8_t transfer_buffer[MAX_TRANSFER_SIZE];
+static uint32_t transfer_size;
+static uint32_t transfer_offset;
 
 void diagnostic_service_init(void) {
     memset(&diag_ctx, 0, sizeof(diag_ctx));
-    // Initialize diagnostic logging
-    init_error_memory();
+    diag_ctx.current_session = DIAG_SESSION_DEFAULT;
+    diag_ctx.dtc_settings_enabled = true;
+    memset(transfer_buffer, 0, sizeof(transfer_buffer));
 }
 
-static int pack_vehicle_info(uint8_t *response) {
-    struct vehicle_info {
-        char vin[17];
-        uint16_t model_year;
-        uint32_t sw_version;
-    } info = {
-        .vin = "VIN1234567890ABCD",
-        .model_year = 2024,
-        .sw_version = VERSION_MAJOR << 16 | VERSION_MINOR << 8 | VERSION_PATCH
-    };
-    
-    memcpy(response, &info, sizeof(info));
-    return sizeof(info);
-}
-
-static int pack_software_version(uint8_t *response) {
-    struct sw_versions {
-        uint32_t bootloader;
-        uint32_t application;
-        uint32_t protocol_stack;
-    } versions = {
-        .bootloader = BOOTLOADER_VERSION,
-        .application = APP_VERSION,
-        .protocol_stack = PROTO_VERSION
-    };
-    
-    memcpy(response, &versions, sizeof(versions));
-    return sizeof(versions);
-}
-
-static int pack_sensor_status(uint8_t *response) {
-    uint8_t len = 0;
-    for (int i = 0; i < num_sensors; i++) {
-        struct sensor_status status;
-        get_sensor_status(i, &status);
-        memcpy(response + len, &status, sizeof(status));
-        len += sizeof(status);
-    }
-    return len;
-}
-
-static int pack_error_memory(uint8_t *response) {
-    return get_stored_dtcs(response);
-}
-
-static int handle_read_data_by_id(const uint8_t *data, uint16_t len) {
-    uint16_t did = (data[0] << 8) | data[1];
-    uint8_t response[256];
-    uint16_t resp_len = 0;
-
-    switch (did) {
-        case DID_VEHICLE_INFO:
-            // Pack VIN, model info, etc.
-            resp_len = pack_vehicle_info(response);
-            break;
+static int validate_session_transition(uint8_t new_session) {
+    // Check if transition is allowed from current session
+    switch (diag_ctx.current_session) {
+        case DIAG_SESSION_DEFAULT:
+            return true; // Can transition to any session
             
-        case DID_ECU_SW_VERSION:
-            // Pack software versions
-            resp_len = pack_software_version(response);
-            break;
+        case DIAG_SESSION_PROGRAMMING:
+            if (new_session == DIAG_SESSION_DEFAULT)
+                return true;
+            return false;
             
-        case DID_SENSOR_STATUS:
-            // Pack current sensor states
-            resp_len = pack_sensor_status(response);
-            break;
-            
-        case DID_ERROR_MEMORY:
-            // Pack stored DTCs
-            resp_len = pack_error_memory(response);
-            break;
+        case DIAG_SESSION_EXTENDED:
+        case DIAG_SESSION_SAFETY:
+            if (new_session == DIAG_SESSION_DEFAULT || 
+                new_session == DIAG_SESSION_PROGRAMMING)
+                return true;
+            return false;
+    }
+    return false;
+}
+
+int start_diagnostic_session(uint8_t session_type) {
+    if (session_type < DIAG_SESSION_DEFAULT || session_type > DIAG_SESSION_SAFETY) {
+        return DIAG_RESP_SUBFUNC_NA;
     }
     
-    // Send diagnostic response
-    send_diagnostic_response(UDS_READ_DATA_BY_ID, response, resp_len);
-    return 0;
-}
-
-static int handle_security_access(const uint8_t *data, uint16_t len) {
-    uint8_t level = data[0];
-    uint32_t seed, key;
-    
-    if (len < 5) {
-        return -EINVAL;
-    }
-
-    // Security level validation
-    if (level > MAX_SECURITY_LEVEL) {
-        return -EACCES;
-    }
-
-    // Calculate response key based on received seed
-    seed = (data[1] << 24) | (data[2] << 16) | (data[3] << 8) | data[4];
-    key = calculate_security_key(seed, level);
-    
-    // Store security level if key matches
-    if (verify_security_key(key, level)) {
-        diag_ctx.security_level = level;
-        return 0;
+    if (!validate_session_transition(session_type)) {
+        return DIAG_RESP_CONDITIONS_NA;
     }
     
-    return -EACCES;
+    k_mutex_lock(&diag_ctx.context_lock, K_FOREVER);
+    diag_ctx.current_session = session_type;
+    diag_ctx.security_level = 0; // Reset security on session change
+    k_mutex_unlock(&diag_ctx.context_lock);
+    
+    return DIAG_RESP_OK;
 }
 
-static int execute_self_test(uint8_t control_type) {
-    switch (control_type) {
-        case ROUTINE_START:
-            return start_self_test();
-        case ROUTINE_STOP:
-            return stop_self_test();
-        case ROUTINE_RESULT:
-            return get_self_test_result();
+static uint32_t generate_security_seed(uint8_t level) {
+    uint32_t timestamp = k_uptime_get_32();
+    uint32_t seed;
+    
+    // Generate seed using timestamp and random number
+    sys_rand_get((uint8_t *)&seed, sizeof(seed));
+    seed ^= timestamp;
+    seed ^= (uint32_t)level << 24;
+    
+    return seed;
+}
+
+static uint32_t calculate_security_key(uint32_t seed, uint8_t level) {
+    // Implement secure key calculation algorithm
+    // This is a placeholder - implement proper security algorithm
+    uint32_t key = seed ^ 0x12345678;
+    key = (key << 13) | (key >> 19);
+    key ^= level << 16;
+    return key;
+}
+
+int verify_security_access(uint8_t level, uint32_t key) {
+    uint32_t current_time = k_uptime_get_32();
+    
+    k_mutex_lock(&diag_ctx.context_lock, K_FOREVER);
+    
+    // Check lockout
+    if (diag_ctx.security_attempts >= MAX_SECURITY_ATTEMPTS) {
+        if (current_time - diag_ctx.last_security_attempt < SECURITY_LOCKOUT_TIME_MS) {
+            k_mutex_unlock(&diag_ctx.context_lock);
+            return DIAG_RESP_REQUIRED_TIME_NA;
+        }
+        diag_ctx.security_attempts = 0;
     }
-    return -EINVAL;
-}
-
-static int perform_sensor_calibration(uint8_t control_type) {
-    switch (control_type) {
-        case ROUTINE_START:
-            return start_sensor_calibration();
-        case ROUTINE_STOP:
-            return stop_sensor_calibration();
-        case ROUTINE_RESULT:
-            return get_calibration_result();
+    
+    // Verify security access
+    uint32_t expected_key = calculate_security_key(diag_ctx.last_security_attempt, level);
+    if (key != expected_key) {
+        diag_ctx.security_attempts++;
+        diag_ctx.last_security_attempt = current_time;
+        k_mutex_unlock(&diag_ctx.context_lock);
+        return DIAG_RESP_INVALID_KEY;
     }
-    return -EINVAL;
+    
+    diag_ctx.security_level = level;
+    diag_ctx.security_attempts = 0;
+    k_mutex_unlock(&diag_ctx.context_lock);
+    
+    return DIAG_RESP_OK;
 }
 
-static int perform_memory_check(uint8_t control_type) {
-    switch (control_type) {
-        case ROUTINE_START:
-            return start_memory_check();
-        case ROUTINE_STOP:
-            return stop_memory_check();
-        case ROUTINE_RESULT:
-            return get_memory_check_result();
+static int handle_routine_start(uint16_t routine_id, const uint8_t *data, uint16_t len) {
+    k_mutex_lock(&diag_ctx.context_lock, K_FOREVER);
+    
+    if (diag_ctx.active_routine.status != 0) {
+        k_mutex_unlock(&diag_ctx.context_lock);
+        return DIAG_RESP_CONDITIONS_NA;
     }
-    return -EINVAL;
-}
-
-static int handle_routine_control(const uint8_t *data, uint16_t len) {
-    uint16_t routine_id = (data[0] << 8) | data[1];
-    uint8_t control_type = data[2];
-
+    
+    diag_ctx.active_routine.routine_id = routine_id;
+    diag_ctx.active_routine.status = 1;
+    memcpy(diag_ctx.active_routine.data, data, len);
+    diag_ctx.active_routine.data_len = len;
+    
+    k_mutex_unlock(&diag_ctx.context_lock);
+    
+    // Start specific routine
     switch (routine_id) {
         case ROUTINE_SELF_TEST:
-            return execute_self_test(control_type);
-            
+            return execute_self_test();
         case ROUTINE_SENSOR_CALIBRATION:
-            return perform_sensor_calibration(control_type);
-            
+            return execute_sensor_calibration();
         case ROUTINE_MEMORY_CHECK:
-            return perform_memory_check(control_type);
+            return execute_memory_check();
+        case ROUTINE_SECURITY_CHECK:
+            return execute_security_check();
+        default:
+            return DIAG_RESP_SUBFUNC_NA;
+    }
+}
+
+int execute_routine(uint16_t routine_id, uint8_t control_type, const uint8_t *data, uint16_t len) {
+    switch (control_type) {
+        case ROUTINE_START:
+            return handle_routine_start(routine_id, data, len);
+            
+        case ROUTINE_STOP:
+            k_mutex_lock(&diag_ctx.context_lock, K_FOREVER);
+            if (diag_ctx.active_routine.routine_id != routine_id) {
+                k_mutex_unlock(&diag_ctx.context_lock);
+                return DIAG_RESP_CONDITIONS_NA;
+            }
+            diag_ctx.active_routine.status = 0;
+            k_mutex_unlock(&diag_ctx.context_lock);
+            return DIAG_RESP_OK;
+            
+        case ROUTINE_RESULT:
+            k_mutex_lock(&diag_ctx.context_lock, K_FOREVER);
+            if (diag_ctx.active_routine.routine_id != routine_id) {
+                k_mutex_unlock(&diag_ctx.context_lock);
+                return DIAG_RESP_CONDITIONS_NA;
+            }
+            // Return routine results
+            memcpy((void *)data, diag_ctx.active_routine.data, 
+                   diag_ctx.active_routine.data_len);
+            k_mutex_unlock(&diag_ctx.context_lock);
+            return DIAG_RESP_OK;
+            
+        default:
+            return DIAG_RESP_SUBFUNC_NA;
+    }
+}
+
+int control_dtc_settings(uint8_t dtc_setting) {
+    k_mutex_lock(&diag_ctx.context_lock, K_FOREVER);
+    diag_ctx.dtc_settings_enabled = dtc_setting != 0;
+    k_mutex_unlock(&diag_ctx.context_lock);
+    return DIAG_RESP_OK;
+}
+
+int control_communication(uint8_t control_type, uint8_t comm_type) {
+    if (control_type > COMM_DISABLE_RX_TX || comm_type > COMM_NORMAL_AND_NM) {
+        return DIAG_RESP_SUBFUNC_NA;
     }
     
-    return -EINVAL;
+    // Implement communication control based on type
+    switch (control_type) {
+        case COMM_ENABLE_RX_TX:
+            enable_network_communication(comm_type);
+            break;
+        case COMM_ENABLE_RX_DISABLE_TX:
+            disable_transmission(comm_type);
+            break;
+        case COMM_DISABLE_RX_ENABLE_TX:
+            disable_reception(comm_type);
+            break;
+        case COMM_DISABLE_RX_TX:
+            disable_network_communication(comm_type);
+            break;
+    }
+    
+    return DIAG_RESP_OK;
 }
 
 int process_diagnostic_request(uint8_t service_id, const uint8_t *data, uint16_t len) {
-    switch(service_id) {
-        case UDS_READ_DATA_BY_ID:
-            return handle_read_data_by_id(data, len);
+    int ret;
+    
+    // Validate session requirements
+    if (!validate_service_in_session(service_id, diag_ctx.current_session)) {
+        return DIAG_RESP_SERVICE_NA;
+    }
+    
+    // Process service request
+    switch (service_id) {
+        case UDS_DIAGNOSTIC_SESSION_CONTROL:
+            if (len < 1) return DIAG_RESP_INCORRECT_LENGTH;
+            return start_diagnostic_session(data[0]);
             
         case UDS_SECURITY_ACCESS:
-            return handle_security_access(data, len);
+            if (len < 5) return DIAG_RESP_INCORRECT_LENGTH;
+            return verify_security_access(data[0], *(uint32_t *)&data[1]);
+            
+        case UDS_READ_DATA_BY_ID:
+            if (len < 2) return DIAG_RESP_INCORRECT_LENGTH;
+            return handle_read_data_by_id(data, len);
+            
+        case UDS_WRITE_DATA_BY_ID:
+            if (len < 3) return DIAG_RESP_INCORRECT_LENGTH;
+            return handle_write_data_by_id(data, len);
             
         case UDS_ROUTINE_CONTROL:
-            return handle_routine_control(data, len);
+            if (len < 3) return DIAG_RESP_INCORRECT_LENGTH;
+            return execute_routine(*(uint16_t *)data, data[2], &data[3], len - 3);
+            
+        case UDS_REQUEST_DOWNLOAD:
+            return handle_request_download(data, len);
+            
+        case UDS_TRANSFER_DATA:
+            return handle_transfer_data(data, len);
+            
+        case UDS_TRANSFER_EXIT:
+            return handle_transfer_exit();
+            
+        case UDS_TESTER_PRESENT:
+            return DIAG_RESP_OK;
+            
+        case UDS_CONTROL_DTC_SETTING:
+            if (len < 1) return DIAG_RESP_INCORRECT_LENGTH;
+            return control_dtc_settings(data[0]);
+            
+        case UDS_COMM_CONTROL:
+            if (len < 2) return DIAG_RESP_INCORRECT_LENGTH;
+            return control_communication(data[0], data[1]);
             
         default:
-            return -EINVAL;
+            return DIAG_RESP_SERVICE_NA;
     }
 }
 
-void update_diagnostic_data(uint16_t did, const void *data, uint16_t len) {
-    switch(did) {
-        case DID_SENSOR_STATUS:
-            update_sensor_status(data, len);
-            break;
-            
-        case DID_ERROR_MEMORY:
-            store_error_entry(data, len);
-            break;
+const char *get_diag_error_string(uint8_t response_code) {
+    switch (response_code) {
+        case DIAG_RESP_OK:
+            return "Success";
+        case DIAG_RESP_GEN_REJECT:
+            return "General reject";
+        case DIAG_RESP_SERVICE_NA:
+            return "Service not available";
+        case DIAG_RESP_SUBFUNC_NA:
+            return "Sub-function not available";
+        case DIAG_RESP_BUSY:
+            return "Busy, repeat request";
+        case DIAG_RESP_CONDITIONS_NA:
+            return "Conditions not correct";
+        case DIAG_RESP_SECURITY_DENIED:
+            return "Security access denied";
+        case DIAG_RESP_INVALID_KEY:
+            return "Invalid security key";
+        case DIAG_RESP_TOO_MANY_ATT:
+            return "Too many attempts";
+        default:
+            return "Unknown error";
     }
 }
