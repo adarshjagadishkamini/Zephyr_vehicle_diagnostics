@@ -197,19 +197,41 @@ void periodic_memory_check(void) {
     k_mutex_lock(&region_mutex, K_FOREVER);
     
     for (int i = 0; i < num_regions; i++) {
+        // Skip inactive regions
+        if (!regions[i].start_addr) {
+            continue;
+        }
+
+        // First verify integrity using CRC
         if (!verify_memory_region(regions[i].start_addr, 
                                 regions[i].size,
                                 regions[i].crc)) {
-            LOG_ERR("Memory corruption detected in region %d", i);
+            LOG_ERR("Memory integrity violation in region %d", i);
             handle_memory_violation(regions[i].start_addr);
+            continue;
         }
-        
-        if (regions[i].is_redundant) {
+
+        // For redundant regions, verify both copies
+        if (regions[i].is_redundant && regions[i].redundant_addr) {
             if (!verify_redundant_memory(regions[i].start_addr,
                                        regions[i].redundant_addr,
                                        regions[i].size)) {
                 LOG_ERR("Redundant memory mismatch in region %d", i);
                 handle_memory_violation(regions[i].start_addr);
+                // Attempt recovery by copying from valid region
+                if (verify_memory_region(regions[i].start_addr, 
+                                       regions[i].size,
+                                       regions[i].crc)) {
+                    memcpy(regions[i].redundant_addr,
+                           regions[i].start_addr,
+                           regions[i].size);
+                } else if (verify_memory_region(regions[i].redundant_addr,
+                                              regions[i].size,
+                                              regions[i].crc)) {
+                    memcpy(regions[i].start_addr,
+                           regions[i].redundant_addr,
+                           regions[i].size);
+                }
             }
         }
     }

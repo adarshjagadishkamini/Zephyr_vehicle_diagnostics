@@ -189,14 +189,25 @@ void verify_redundant_task_output(const char *task_name, void *result1,
 bool monitor_task_interference(const char *task_name) {
     for (int i = 0; i < num_tasks; i++) {
         if (strcmp(tasks[i].config.name, task_name) == 0) {
-            k_thread_runtime_stats_t stats;
-            k_thread_runtime_stats_get(k_current_get(), &stats);
+            k_thread_runtime_stats_t prev_stats, curr_stats;
+            memcpy(&prev_stats, &tasks[i].last_runtime_stats, sizeof(k_thread_runtime_stats_t));
+            k_thread_runtime_stats_get(k_current_get(), &curr_stats);
             
             // Check for interference from higher priority tasks
-            if (stats.preempt_count > tasks[i].stats.interference_count) {
-                tasks[i].stats.interference_count = stats.preempt_count;
+            if ((curr_stats.preempt_count - prev_stats.preempt_count) > 
+                tasks[i].config.max_interference_count) {
+                k_mutex_lock(&tasks[i].stats_mutex, K_FOREVER);
+                tasks[i].stats.interference_count++;
+                memcpy(&tasks[i].last_runtime_stats, &curr_stats, sizeof(k_thread_runtime_stats_t));
+                k_mutex_unlock(&tasks[i].stats_mutex);
+                
+                // Log interference event
+                LOG_WRN("Task interference detected on %s", task_name);
+                log_task_violation(task_name, TASK_INTERFERENCE_ERROR);
                 return true;
             }
+            
+            memcpy(&tasks[i].last_runtime_stats, &curr_stats, sizeof(k_thread_runtime_stats_t));
             break;
         }
     }
