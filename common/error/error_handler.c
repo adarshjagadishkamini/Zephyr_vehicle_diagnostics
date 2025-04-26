@@ -1,93 +1,227 @@
+#include <zephyr/kernel.h>
 #include "error_handler.h"
-#include <zephyr/drivers/watchdog.h>
+#include "asil.h"
+#include "task_monitor.h"
+#include <zephyr/logging/log.h>
 
-#define WDT_TIMEOUT_MS 5000
+LOG_MODULE_REGISTER(error_handler, CONFIG_ERROR_HANDLER_LOG_LEVEL);
 
-static const struct device *wdt_dev;
-static struct wdt_timeout_cfg wdt_config;
+#define MAX_RETRIES 3
+#define RETRY_DELAY_MS 100
+
+static uint32_t error_counts[ERROR_TYPE_MAX];
+static K_MUTEX_DEFINE(error_mutex);
 
 void error_handler_init(void) {
-    wdt_dev = DEVICE_DT_GET(DT_ALIAS(watchdog0));
-    
-    wdt_config.window.min = 0;
-    wdt_config.window.max = WDT_TIMEOUT_MS;
-    wdt_config.callback = NULL;
-    
-    wdt_install_timeout(wdt_dev, &wdt_config);
-    wdt_setup(wdt_dev, WDT_OPT_PAUSE_HALTED_BY_DBG);
+    k_mutex_lock(&error_mutex, K_FOREVER);
+    memset(error_counts, 0, sizeof(error_counts));
+    k_mutex_unlock(&error_mutex);
 }
 
-void handle_error(system_error_t error) {
-    switch(error) {
-        case ERROR_SENSOR_TIMEOUT:
-            // Attempt sensor reset
+static bool should_attempt_recovery(uint32_t error_type) {
+    k_mutex_lock(&error_mutex, K_FOREVER);
+    bool result = error_counts[error_type] < MAX_RETRIES;
+    if (result) {
+        error_counts[error_type]++;
+    }
+    k_mutex_unlock(&error_mutex);
+    return result;
+}
+
+static void reset_error_count(uint32_t error_type) {
+    k_mutex_lock(&error_mutex, K_FOREVER);
+    error_counts[error_type] = 0;
+    k_mutex_unlock(&error_mutex);
+}
+
+void handle_error(uint32_t error_type) {
+    LOG_ERR("Error detected: %d", error_type);
+    
+    if (!should_attempt_recovery(error_type)) {
+        LOG_ERR("Max retries exceeded for error type %d", error_type);
+        enter_safe_state();
+        return;
+    }
+
+    bool recovered = false;
+    switch (error_type) {
+        case ERROR_CAN_BUS:
+            recovered = handle_can_bus_error();
             break;
             
-        case ERROR_CAN_BUS_OFF:
-            // Attempt CAN recovery
-            can_recover_from_bus_off(can_dev);
+        case ERROR_SENSOR:
+            recovered = handle_sensor_error();
             break;
             
-        case ERROR_MQTT_DISCONNECT:
-            // Attempt MQTT reconnection
-            mqtt_disconnect(client);
-            k_sleep(K_MSEC(1000));
-            mqtt_connect(client);
+        case ERROR_TASK_DEADLINE:
+            recovered = handle_task_deadline_miss();
             break;
             
-        case ERROR_BLE_FAIL:
-            // Reset BLE stack
-            bt_disable();
-            k_sleep(K_MSEC(1000));
-            bt_enable(NULL);
+        case ERROR_STACK_OVERFLOW:
+            recovered = handle_stack_overflow();
+            break;
+            
+        case ERROR_MEMORY_CORRUPTION:
+            recovered = handle_memory_violation();
             break;
             
         case ERROR_SECURE_BOOT:
-            // Critical error - system reset
-            sys_reboot(SYS_REBOOT_COLD);
-            break;
+            // Critical error - no recovery
+            LOG_ERR("Critical secure boot error");
+            enter_safe_state();
+            return;
+            
+        default:
+            LOG_ERR("Unknown error type: %d", error_type);
+            enter_safe_state();
+            return;
     }
-}
-
-static void handle_timing_violation(void) {
-    log_safety_event("Task timing violation", k_uptime_get_32());
     
-    if (++timing_violations > MAX_TIMING_VIOLATIONS) {
-        enter_safe_state();
+    if (recovered) {
+        reset_error_count(error_type);
+        LOG_INF("Successfully recovered from error %d", error_type);
     } else {
-        // Try recovery by resetting task
-        reset_violated_task();
+        LOG_ERR("Recovery failed for error %d", error_type);
+        if (!should_attempt_recovery(error_type)) {
+            enter_safe_state();
+        }
     }
 }
 
-static void handle_bus_off_recovery(void) {
-    // Attempt CAN bus recovery
+static bool handle_can_bus_error(void) {
+    LOG_WRN("Attempting CAN bus recovery");
+    // Try to recover bus-off state
     if (can_recover_from_bus_off(can_dev) != 0) {
-        enter_safe_state();
+        return false;
     }
     
-    // Reset CAN message counters
+    // Reset CAN controllers
+    can_stop(can_dev);
+    k_sleep(K_MSEC(100));
+    if (can_start(can_dev) != 0) {
+        return false;
+    }
+    
+    // Reset message counters and buffers
     reset_can_statistics();
+    return true;
 }
 
-static void handle_memory_violation(void) {
-    LOG_ERR("Memory protection violation detected");
-    log_safety_event("Memory violation", k_uptime_get_32());
-    enter_safe_state();
+static bool handle_sensor_error(void) {
+    LOG_WRN("Attempting sensor recovery");
+    // Try sensor reinitialization
+    if (reinitialize_sensors() != 0) {
+        return false;
+    }
+    
+    // Verify sensor readings
+    if (!verify_sensor_readings()) {
+        return false;
+    }
+    
+    return true;
 }
 
-static void handle_task_deadline_miss(void) {
-    LOG_ERR("Task deadline violation detected");
-    log_safety_event("Deadline miss", k_uptime_get_32());
+static bool handle_task_deadline_miss(void) {
+    LOG_WRN("Handling task deadline miss");
+    // Reset affected task
     reset_violated_task();
+    
+    // Check system load
+    if (is_cpu_overloaded()) {
+        LOG_WRN("System overload detected");
+        // Attempt load reduction
+        if (!reduce_system_load()) {
+            return false;
+        }
+    }
+    
+    return true;
 }
 
-static void handle_stack_overflow(void) {
+static bool handle_stack_overflow(void) {
     LOG_ERR("Stack overflow detected");
-    log_safety_event("Stack overflow", k_uptime_get_32());
-    enter_safe_state();
+    // Stack overflow is critical - terminate affected task
+    terminate_violated_task();
+    
+    // Verify remaining stack
+    if (!verify_stack_integrity()) {
+        return false;
+    }
+    
+    return true;
 }
 
-void watchdog_feed(void) {
-    wdt_feed(wdt_dev, 0);
+static bool handle_memory_violation(void) {
+    LOG_ERR("Memory violation detected");
+    void *corrupted_addr = get_last_fault_address();
+    
+    // Check if address is in protected region
+    if (is_critical_memory_region(corrupted_addr)) {
+        LOG_ERR("Critical memory region corrupted");
+        return false;
+    }
+    
+    // Try to restore from backup
+    if (restore_memory_backup()) {
+        if (verify_memory_integrity()) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+static bool reduce_system_load(void) {
+    // Identify non-critical tasks
+    struct task_statistics stats;
+    bool reduced = false;
+    
+    for (int i = 0; i < MAX_MONITORED_TASKS; i++) {
+        const char *task_name = get_task_name(i);
+        if (!task_name) continue;
+        
+        get_task_statistics(task_name, &stats);
+        if (stats.cpu_usage_percent > 20 && !is_critical_task(task_name)) {
+            // Reduce task priority or frequency
+            if (reduce_task_priority(task_name)) {
+                reduced = true;
+            }
+        }
+    }
+    
+    return reduced;
+}
+
+static bool verify_stack_integrity(void) {
+    // Check stack guards
+    for (int i = 0; i < MAX_MONITORED_TASKS; i++) {
+        const char *task_name = get_task_name(i);
+        if (!task_name) continue;
+        
+        if (!verify_stack_guards(task_name)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void notify_error_recovery(uint32_t error_type) {
+    k_mutex_lock(&error_mutex, K_FOREVER);
+    error_counts[error_type] = 0;
+    k_mutex_unlock(&error_mutex);
+    
+    LOG_INF("Error %d recovery confirmed", error_type);
+}
+
+uint32_t get_error_count(uint32_t error_type) {
+    if (error_type >= ERROR_TYPE_MAX) {
+        return 0;
+    }
+    
+    k_mutex_lock(&error_mutex, K_FOREVER);
+    uint32_t count = error_counts[error_type];
+    k_mutex_unlock(&error_mutex);
+    
+    return count;
 }

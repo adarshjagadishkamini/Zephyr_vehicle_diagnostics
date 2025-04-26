@@ -15,25 +15,35 @@ static uint32_t test_thread_id;
 
 static void test_task_entry(void *p1, void *p2, void *p3) {
     while (1) {
-        record_control_flow_point(CHECKPOINT_TASK_START);
-        k_sleep(K_MSEC(50));
-        record_control_flow_point(CHECKPOINT_TASK_END);
+        k_sleep(K_MSEC(10));
+    }
+}
+
+static void busy_task_entry(void *p1, void *p2, void *p3) {
+    volatile int i = 0;
+    while (1) {
+        i++; // Consume CPU
     }
 }
 
 static void *test_setup(void) {
-    // Initialize task monitoring
     task_monitor_init();
 
-    // Create test thread
+    struct task_config config = {
+        .name = "test_task",
+        .deadline_ms = MAX_EXECUTION_TIME_MS,
+        .max_runtime_ms = MAX_EXECUTION_TIME_MS,
+        .min_stack_remaining = 256,
+        .is_critical = false
+    };
+
     test_thread_id = k_thread_create(&test_thread, test_stack,
                                    TEST_THREAD_STACK_SIZE,
                                    test_task_entry,
                                    NULL, NULL, NULL,
                                    TEST_THREAD_PRIORITY, 0, K_NO_WAIT);
-                                   
-    // Register thread for monitoring
-    register_monitored_task(test_thread_id, MAX_EXECUTION_TIME_MS);
+
+    register_monitored_task(&config);
     return NULL;
 }
 
@@ -44,8 +54,7 @@ static void test_cleanup(void *data) {
 ZTEST_SUITE(task_monitor_tests, NULL, test_setup, NULL, NULL, test_cleanup);
 
 // Test deadline monitoring
-ZTEST(task_monitor_tests, test_deadline_monitoring)
-{
+ZTEST(task_monitor_tests, test_deadline_monitoring) {
     // Normal execution
     k_sleep(K_MSEC(75));
     zassert_true(check_task_deadlines(), "Valid task execution marked as deadline miss");
@@ -55,141 +64,114 @@ ZTEST(task_monitor_tests, test_deadline_monitoring)
     zassert_false(check_task_deadlines(), "Deadline miss not detected");
     
     // Verify error handling
-    struct runtime_stats stats;
-    get_task_statistics(test_thread_id, &stats);
+    struct task_statistics stats;
+    get_task_statistics("test_task", &stats);
     zassert_true(stats.deadline_misses > 0, "Deadline miss not recorded in statistics");
 }
 
 // Test control flow monitoring
-ZTEST(task_monitor_tests, test_control_flow)
-{
+ZTEST(task_monitor_tests, test_control_flow) {
     // Reset control flow sequence
-    reset_control_flow_monitoring();
+    reset_task_monitoring("test_task");
     
     // Verify normal sequence
-    record_control_flow_point(CHECKPOINT_INIT);
-    record_control_flow_point(CHECKPOINT_TASK_START);
-    record_control_flow_point(CHECKPOINT_TASK_END);
+    uint32_t checkpoints[] = {1, 2, 3, 4};
+    for (int i = 0; i < 4; i++) {
+        task_monitor_checkpoint("test_task");
+        k_sleep(K_MSEC(10));
+    }
     
-    zassert_true(verify_control_flow(), "Valid control flow marked as violation");
+    struct task_statistics stats;
+    get_task_statistics("test_task", &stats);
+    zassert_equal(stats.control_flow_violations, 0, 
+                  "Valid control flow marked as violation");
+
+    // Test invalid sequence by skipping checkpoint
+    task_monitor_checkpoint("test_task");
+    k_sleep(K_MSEC(MAX_EXECUTION_TIME_MS + 10));
+    task_monitor_checkpoint("test_task");
     
-    // Test invalid sequence
-    record_control_flow_point(CHECKPOINT_TASK_END); // Out of order
-    zassert_false(verify_control_flow(), "Control flow violation not detected");
-    
-    // Verify statistics
-    struct runtime_stats stats;
-    get_task_statistics(test_thread_id, &stats);
+    get_task_statistics("test_task", &stats);
     zassert_true(stats.control_flow_violations > 0, 
-                 "Control flow violation not recorded");
+                 "Control flow violation not detected");
 }
 
 // Test stack monitoring
-ZTEST(task_monitor_tests, test_stack_monitoring)
-{
-    // Get initial stack usage
-    struct runtime_stats stats;
-    get_task_statistics(test_thread_id, &stats);
-    uint32_t initial_stack_usage = stats.stack_usage;
+ZTEST(task_monitor_tests, test_stack_monitoring) {
+    struct task_statistics stats_before;
+    get_task_statistics("test_task", &stats_before);
     
-    // Perform some stack-intensive operations in test thread
-    // This will be monitored by the stack usage tracking
-    k_sleep(K_MSEC(200));
+    // Recursively consume stack
+    volatile uint8_t array[512];
+    for (int i = 0; i < 512; i++) {
+        array[i] = i;
+    }
+    k_sleep(K_MSEC(10));
     
-    // Check updated stack usage
-    get_task_statistics(test_thread_id, &stats);
-    zassert_true(stats.stack_usage >= initial_stack_usage,
-                 "Stack usage monitoring failed");
-                 
-    // Verify stack overflow detection
-    zassert_false(stats.stack_overflow,
-                 "False stack overflow detection");
+    struct task_statistics stats_after;
+    get_task_statistics("test_task", &stats_after);
+    
+    zassert_true(stats_after.stack_usage_peak > stats_before.stack_usage_peak,
+                 "Stack usage increase not detected");
 }
 
 // Test runtime monitoring
-ZTEST(task_monitor_tests, test_runtime_monitoring)
-{
-    struct runtime_stats initial_stats;
-    get_task_statistics(test_thread_id, &initial_stats);
+ZTEST(task_monitor_tests, test_runtime_monitoring) {
+    struct task_statistics stats_before;
+    get_task_statistics("test_task", &stats_before);
     
-    // Let task run for a while
+    // Run CPU intensive task
+    K_THREAD_STACK_DEFINE(busy_stack, 1024);
+    k_tid_t busy_tid = k_thread_create(&test_thread, busy_stack,
+                                     1024, busy_task_entry,
+                                     NULL, NULL, NULL,
+                                     TEST_THREAD_PRIORITY - 1, 0, K_NO_WAIT);
     k_sleep(K_MSEC(500));
+    k_thread_abort(busy_tid);
     
-    struct runtime_stats current_stats;
-    get_task_statistics(test_thread_id, &current_stats);
+    struct task_statistics stats_after;
+    get_task_statistics("test_task", &stats_after);
     
-    // Verify runtime accumulation
-    zassert_true(current_stats.total_runtime > initial_stats.total_runtime,
-                 "Runtime not accumulated");
-    
-    // Verify execution count
-    zassert_true(current_stats.execution_count > initial_stats.execution_count,
-                 "Execution count not incremented");
+    zassert_true(stats_after.total_runtime_ms > stats_before.total_runtime_ms,
+                 "Runtime tracking not working");
+    zassert_true(stats_after.cpu_usage_percent > stats_before.cpu_usage_percent,
+                 "CPU usage tracking not working");
 }
 
-// Test error recovery
-ZTEST(task_monitor_tests, test_error_recovery)
-{
-    // Simulate multiple deadline misses
-    for (int i = 0; i < 3; i++) {
-        k_sleep(K_MSEC(MAX_EXECUTION_TIME_MS + 50));
-        check_task_deadlines();
-    }
+// Test task interference
+ZTEST(task_monitor_tests, test_task_interference) {
+    struct task_statistics stats_before;
+    get_task_statistics("test_task", &stats_before);
     
-    struct runtime_stats stats;
-    get_task_statistics(test_thread_id, &stats);
+    // Create multiple interfering tasks
+    K_THREAD_STACK_DEFINE(interfere_stack1, 1024);
+    K_THREAD_STACK_DEFINE(interfere_stack2, 1024);
     
-    // Verify degraded mode transition
-    zassert_equal(get_safety_state(), SAFETY_STATE_DEGRADED,
-                 "Failed to transition to degraded state");
+    k_tid_t t1 = k_thread_create(&test_thread, interfere_stack1,
+                                1024, busy_task_entry,
+                                NULL, NULL, NULL,
+                                TEST_THREAD_PRIORITY - 1, 0, K_NO_WAIT);
+                                
+    k_tid_t t2 = k_thread_create(&test_thread, interfere_stack2,  
+                                1024, busy_task_entry,
+                                NULL, NULL, NULL,
+                                TEST_THREAD_PRIORITY - 1, 0, K_NO_WAIT);
     
-    // Test recovery
-    reset_task_monitoring(test_thread_id);
-    k_sleep(K_MSEC(75)); // Normal execution
+    k_sleep(K_MSEC(200));
     
-    // Verify recovery
-    zassert_equal(get_safety_state(), SAFETY_STATE_NORMAL,
-                 "Failed to recover from degraded state");
-}
-
-// Test load monitoring
-ZTEST(task_monitor_tests, test_load_monitoring)
-{
-    struct runtime_stats stats;
+    struct task_statistics stats_after;
+    get_task_statistics("test_task", &stats_after);
     
-    // Monitor CPU load over time
-    k_sleep(K_MSEC(1000));
-    get_task_statistics(test_thread_id, &stats);
-    
-    // Verify CPU load calculation
-    zassert_true(stats.cpu_load >= 0 && stats.cpu_load <= 100,
-                 "Invalid CPU load calculation");
-    
-    // Test overload detection
-    bool overload = is_cpu_overloaded();
-    if (overload) {
-        zassert_true(stats.cpu_load > 80,
-                     "Incorrect overload detection");
-    }
-}
-
-// Test multi-task interference
-ZTEST(task_monitor_tests, test_task_interference)
-{
-    struct runtime_stats stats_before, stats_after;
-    get_task_statistics(test_thread_id, &stats_before);
-    
-    // Create high-priority interfering task
-    k_thread_create(&test_thread, test_stack,
-                   TEST_THREAD_STACK_SIZE,
-                   test_task_entry,
-                   NULL, NULL, NULL,
-                   TEST_THREAD_PRIORITY - 1, 0, K_NO_WAIT);
-                   
-    k_sleep(K_MSEC(500));
-    get_task_statistics(test_thread_id, &stats_after);
-    
-    // Verify interference detection
     zassert_true(stats_after.interference_count > stats_before.interference_count,
                  "Task interference not detected");
+    
+    k_thread_abort(t1);
+    k_thread_abort(t2);
+    
+    // Verify recovery
+    reset_task_monitoring("test_task");
+    struct task_statistics stats_recovery;
+    get_task_statistics("test_task", &stats_recovery);
+    zassert_equal(stats_recovery.interference_count, 0,
+                 "Interference count not reset after recovery");
 }

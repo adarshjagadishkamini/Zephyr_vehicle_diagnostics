@@ -68,6 +68,23 @@ void runtime_stats_start_task(const char *task_name) {
     k_mutex_unlock(&runtime_mutex);
 }
 
+// Add overflow protection to moving average calculation
+static void update_moving_average(struct task_runtime_data *task, uint32_t duration) {
+    // Check for uint32_t overflow
+    uint64_t sum = 0;
+    
+    task->execution_times[task->moving_avg_index] = duration;
+    task->moving_avg_index = (task->moving_avg_index + 1) % MOVING_AVG_WINDOW;
+    
+    // Calculate sum using 64-bit to prevent overflow
+    for (int i = 0; i < MOVING_AVG_WINDOW; i++) {
+        sum += task->execution_times[i];
+    }
+    
+    task->current.avg_execution_time = (uint32_t)(sum / MOVING_AVG_WINDOW);
+}
+
+// Handle task state transitions
 void runtime_stats_end_task(const char *task_name) {
     k_mutex_lock(&runtime_mutex, K_FOREVER);
     struct task_runtime_data *task = find_or_create_task(task_name);
@@ -76,10 +93,16 @@ void runtime_stats_end_task(const char *task_name) {
         k_mutex_lock(&task->stats_mutex, K_FOREVER);
         
         uint64_t end_time = k_uptime_get();
-        uint32_t duration = end_time - task->current.start_time;
+        // Handle timer wrap-around
+        uint32_t duration = (end_time >= task->current.start_time) ? 
+            (uint32_t)(end_time - task->current.start_time) :
+            (uint32_t)((UINT64_MAX - task->current.start_time) + end_time);
         
-        // Update current stats
-        task->current.total_runtime += duration;
+        // Update statistics
+        task->current.total_runtime = 
+            (task->current.total_runtime + duration <= UINT32_MAX) ?
+            task->current.total_runtime + duration : UINT32_MAX;
+            
         if (duration > task->current.max_execution_time) {
             task->current.max_execution_time = duration;
         }
@@ -88,25 +111,19 @@ void runtime_stats_end_task(const char *task_name) {
             task->current.min_execution_time = duration;
         }
         
-        // Update moving average
-        task->execution_times[task->moving_avg_index] = duration;
-        task->moving_avg_index = (task->moving_avg_index + 1) % MOVING_AVG_WINDOW;
+        // Update moving average with overflow protection
+        update_moving_average(task, duration);
         
-        // Calculate average
-        uint32_t sum = 0;
-        for (int i = 0; i < MOVING_AVG_WINDOW; i++) {
-            sum += task->execution_times[i];
-        }
-        task->current.avg_execution_time = sum / MOVING_AVG_WINDOW;
-        
-        // Store historical data periodically
-        if (task->current.execution_count % 100 == 0) {
+        // Store historical data periodically with bounds check
+        if (task->current.execution_count % 100 == 0 && 
+            task->current.execution_count > 0) {
+            task->history_index = (task->history_index + 1) % HISTORY_SIZE;
             memcpy(&task->history[task->history_index], 
                    &task->current, 
                    sizeof(struct runtime_stats));
-            task->history_index = (task->history_index + 1) % HISTORY_SIZE;
         }
         
+        task->current.execution_count++;
         k_mutex_unlock(&task->stats_mutex);
     }
     

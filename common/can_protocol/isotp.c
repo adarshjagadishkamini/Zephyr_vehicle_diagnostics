@@ -73,61 +73,98 @@ int isotp_send(struct isotp_ctx *ctx, const uint8_t *data, size_t len) {
     }
 }
 
-int isotp_receive(struct isotp_ctx *ctx, uint8_t *data, size_t len) {
+int isotp_receive(struct isotp_ctx *ctx, uint8_t *dest, size_t len) {
     struct can_frame frame;
-    uint8_t *dest = data;
     size_t remaining = len;
+    uint32_t start_time = k_uptime_get_32();
     
-    // Receive first frame
+    // Receive first frame with timeout validation
     if (can_receive(ctx->can_dev, &frame, K_MSEC(ISO_TP_TIMEOUT_MS)) != 0) {
         return -ETIMEDOUT;
+    }
+    
+    if ((frame.id & ctx->rx_id) != ctx->rx_id) {
+        return -EINVAL;  // Invalid ID
     }
     
     uint8_t frame_type = frame.data[0] & 0xF0;
     if (frame_type == ISOTP_SINGLE_FRAME) {
         size_t recv_len = frame.data[0] & 0x0F;
+        if (recv_len == 0 || recv_len > 7) {
+            return -EMSGSIZE;  // Invalid length
+        }
+        if (recv_len > len) {
+            return -ENOSPC;  // Buffer too small
+        }
         memcpy(dest, &frame.data[1], recv_len);
         return recv_len;
-    } else if (frame_type == ISOTP_FIRST_FRAME) {
+    } 
+    
+    if (frame_type == ISOTP_FIRST_FRAME) {
         size_t total_len = ((frame.data[0] & 0x0F) << 8) | frame.data[1];
-        if (total_len > len) return -ENOSPC;
+        if (total_len > len || total_len < 8) {
+            return -EMSGSIZE;  // Invalid length
+        }
         
+        // Copy initial data
         memcpy(dest, &frame.data[2], 6);
         dest += 6;
-        remaining -= 6;
+        remaining = total_len - 6;
         
-        // Send flow control
+        // Send flow control with validation
         struct can_frame fc = {
             .id = ctx->tx_id,
             .dlc = 3,
             .data = {ISOTP_FLOW_CONTROL, ISO_TP_BLOCK_SIZE, ISO_TP_STM}
         };
-        can_send(ctx->can_dev, &fc, K_MSEC(100), NULL, NULL);
         
-        // Receive consecutive frames
+        int ret = can_send(ctx->can_dev, &fc, K_MSEC(100), NULL, NULL);
+        if (ret != 0) {
+            return ret;  // Flow control send failed
+        }
+        
+        // Receive consecutive frames with sequence validation
         uint8_t expected_seq = 1;
         while (remaining > 0) {
+            // Check overall timeout
+            if (k_uptime_get_32() - start_time > ISO_TP_TIMEOUT_MS) {
+                return -ETIMEDOUT;
+            }
+            
             if (can_receive(ctx->can_dev, &frame, K_MSEC(ISO_TP_TIMEOUT_MS)) != 0) {
                 return -ETIMEDOUT;
             }
             
             if ((frame.data[0] & 0xF0) != ISOTP_CONSECUTIVE) {
-                return -EINVAL;
+                return -EINVAL;  // Invalid frame type
             }
             
-            if ((frame.data[0] & 0x0F) != expected_seq) {
-                return -EINVAL;
+            uint8_t seq = frame.data[0] & 0x0F;
+            if (seq != expected_seq) {
+                return -EINVAL;  // Sequence mismatch
             }
             
             size_t copy_len = MIN(7, remaining);
             memcpy(dest, &frame.data[1], copy_len);
             dest += copy_len;
             remaining -= copy_len;
+            
             expected_seq = (expected_seq + 1) & 0x0F;
+            
+            // Optional: Add flow control for large transfers
+            if (ISO_TP_BLOCK_SIZE > 0 && 
+                (expected_seq % ISO_TP_BLOCK_SIZE) == 0 && 
+                remaining > 0) {
+                fc.data[1] = MIN(ISO_TP_BLOCK_SIZE, (remaining + 6) / 7);
+                ret = can_send(ctx->can_dev, &fc, K_MSEC(100), NULL, NULL);
+                if (ret != 0) {
+                    return ret;
+                }
+            }
         }
         
         return total_len;
     }
     
-    return -EINVAL;
+    return -EINVAL;  // Unknown frame type
 }

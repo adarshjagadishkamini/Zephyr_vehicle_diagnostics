@@ -91,11 +91,15 @@ static uint32_t generate_security_seed(uint8_t level) {
 }
 
 static uint32_t calculate_security_key(uint32_t seed, uint8_t level) {
-    // Implement secure key calculation algorithm
-    // This is a placeholder - implement proper security algorithm
-    uint32_t key = seed ^ 0x12345678;
-    key = (key << 13) | (key >> 19);
-    key ^= level << 16;
+    // Use a more secure key derivation approach
+    uint32_t key = seed;
+    for (int i = 0; i < 8; i++) {
+        key ^= (key << 13) | (key >> 19);  // Left rotation
+        key *= 0x85ebca6b;  // Multiplication with prime number
+        key ^= key >> 16;
+        key *= 0xc2b2ae35;  // Another prime multiplication
+        key ^= (uint32_t)level << (8 * (i % 4));  // Mix in security level
+    }
     return key;
 }
 

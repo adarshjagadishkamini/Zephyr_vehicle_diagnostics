@@ -58,6 +58,9 @@ int j1939_register_pgn_handler(uint32_t pgn, void (*handler)(struct j1939_ctx *,
 
 static void handle_tp_rts(struct j1939_ctx *ctx, const struct can_frame *frame) {
     if (ctx->tp_in_progress) {
+        // Already in a session, send abort
+        uint8_t abort_msg[8] = {TP_CM_Abort, 0x01, 0xFF, 0xFF};
+        j1939_send_pgn(ctx, J1939_PGN_TP_CM, abort_msg, 8);
         return;
     }
     
@@ -65,22 +68,26 @@ static void handle_tp_rts(struct j1939_ctx *ctx, const struct can_frame *frame) 
     uint8_t num_packets = frame->data[3];
     uint32_t pgn = (frame->data[5] | (frame->data[6] << 8) | (frame->data[7] << 16));
     
-    if (size > sizeof(tp_buffer)) {
-        // Send abort
-        uint8_t abort_msg[8] = {TP_CM_Abort, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    // Validate size and packet count
+    if (size > sizeof(tp_buffer) || size == 0 || 
+        num_packets == 0 || num_packets > TP_MAX_PACKETS ||
+        size != ((num_packets - 1) * 7 + (size % 7 ? size % 7 : 7))) {
+        uint8_t abort_msg[8] = {TP_CM_Abort, 0x02, 0xFF, 0xFF};
         j1939_send_pgn(ctx, J1939_PGN_TP_CM, abort_msg, 8);
         return;
     }
     
+    // Start new TP session
     ctx->tp_session.pgn = pgn;
     ctx->tp_session.total_size = size;
     ctx->tp_session.num_packets = num_packets;
     ctx->tp_session.next_packet = 1;
     ctx->tp_session.data = tp_buffer;
+    ctx->tp_session.start_time = k_uptime_get_32();
     ctx->tp_in_progress = true;
     
     // Send CTS
-    uint8_t cts_msg[8] = {TP_CM_CTS, 255, 1, 0xFF, 0xFF};
+    uint8_t cts_msg[8] = {TP_CM_CTS, num_packets, 1, 0xFF, 0xFF};
     cts_msg[5] = pgn & 0xFF;
     cts_msg[6] = (pgn >> 8) & 0xFF;
     cts_msg[7] = (pgn >> 16) & 0xFF;
@@ -93,18 +100,47 @@ static void handle_tp_dt(struct j1939_ctx *ctx, const struct can_frame *frame) {
         return;
     }
     
+    // Check session timeout
+    if (k_uptime_get_32() - ctx->tp_session.start_time > TP_TIMEOUT_MS) {
+        uint8_t abort_msg[8] = {TP_CM_Abort, 0x03, 0xFF, 0xFF};
+        j1939_send_pgn(ctx, J1939_PGN_TP_CM, abort_msg, 8);
+        ctx->tp_in_progress = false;
+        return;
+    }
+    
     uint8_t seq = frame->data[0];
     if (seq != ctx->tp_session.next_packet) {
+        // Sequence error
+        uint8_t abort_msg[8] = {TP_CM_Abort, 0x04, 0xFF, 0xFF};
+        j1939_send_pgn(ctx, J1939_PGN_TP_CM, abort_msg, 8);
+        ctx->tp_in_progress = false;
         return;
     }
     
     uint16_t offset = (seq - 1) * 7;
     uint8_t len = MIN(7, ctx->tp_session.total_size - offset);
-    memcpy(ctx->tp_session.data + offset, &frame->data[1], len);
     
+    // Validate offset and length
+    if (offset + len > ctx->tp_session.total_size) {
+        uint8_t abort_msg[8] = {TP_CM_Abort, 0x05, 0xFF, 0xFF};
+        j1939_send_pgn(ctx, J1939_PGN_TP_CM, abort_msg, 8);
+        ctx->tp_in_progress = false;
+        return;
+    }
+    
+    memcpy(ctx->tp_session.data + offset, &frame->data[1], len);
     ctx->tp_session.next_packet++;
     
+    // Check if transfer complete
     if (ctx->tp_session.next_packet > ctx->tp_session.num_packets) {
+        // Validate total size
+        if (ctx->tp_session.total_size != offset + len) {
+            uint8_t abort_msg[8] = {TP_CM_Abort, 0x06, 0xFF, 0xFF};
+            j1939_send_pgn(ctx, J1939_PGN_TP_CM, abort_msg, 8);
+            ctx->tp_in_progress = false;
+            return;
+        }
+        
         // Send End of Message ACK
         uint8_t eom_msg[8] = {TP_CM_EndOfMsgAck, 
                              ctx->tp_session.total_size & 0xFF,
@@ -114,13 +150,13 @@ static void handle_tp_dt(struct j1939_ctx *ctx, const struct can_frame *frame) {
         eom_msg[5] = ctx->tp_session.pgn & 0xFF;
         eom_msg[6] = (ctx->tp_session.pgn >> 8) & 0xFF;
         eom_msg[7] = (ctx->tp_session.pgn >> 16) & 0xFF;
-        
         j1939_send_pgn(ctx, J1939_PGN_TP_CM, eom_msg, 8);
         
         // Process complete message
         for (int i = 0; i < num_handlers; i++) {
             if (pgn_handlers[i].pgn == ctx->tp_session.pgn) {
-                pgn_handlers[i].handler(ctx, ctx->tp_session.data, ctx->tp_session.total_size);
+                pgn_handlers[i].handler(ctx, ctx->tp_session.data, 
+                                      ctx->tp_session.total_size);
                 break;
             }
         }
