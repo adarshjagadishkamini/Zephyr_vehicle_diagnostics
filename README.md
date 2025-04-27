@@ -1,7 +1,7 @@
 # Smart Vehicle Tracking and Diagnostics System
 
 ## Overview
-A production-ready vehicle tracking and diagnostics system using Zephyr RTOS on ESP32-S3. Features essential vehicle telemetry, diagnostics, and ASIL-B safety features.
+A vehicle tracking and diagnostics system using Zephyr RTOS on ESP32-S3. Features essential vehicle telemetry, diagnostics, and ASIL-B safety features.
 
 ## Core Features
 - Real-time sensor monitoring (temperature, battery, brakes, tire pressure)
